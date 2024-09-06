@@ -12,6 +12,7 @@ from .deep_r import RewiringRecord
 from .. import Connection, Population, Network
 from ..callbacks import (BatchProgressBar, Callback, CustomUpdateOnBatchBegin,
                          CustomUpdateOnBatchEnd, CustomUpdateOnEpochEnd,
+                         CustomUpdateOnTimestepBegin,
                          CustomUpdateOnTimestepEnd)
 from ..communicators import Communicator
 from ..connection import Connection
@@ -212,56 +213,6 @@ class UpdateTrial(Callback):
         # Set dynamic parameter to batch ID
         self.genn_pop.set_dynamic_param_value("Trial", batch)
 
-
-class CustomUpdateOnLastTimestep(Callback):
-    """Callback that triggers a GeNN custom update 
-    at the start of the last timestep in each example"""
-    def __init__(self, name: str, example_timesteps: int):
-        self.name = name
-        self.example_timesteps = example_timesteps
-    
-    def set_params(self, compiled_network, **kwargs):
-        # Extract compiled network
-        self._compiled_network = compiled_network
-
-    def on_timestep_begin(self, timestep: int):
-        if timestep == (self.example_timesteps - 1):
-            logger.debug(f"Running custom update {self.name} "
-                         f"at start of timestep {timestep}")
-            self._compiled_network.genn_model.custom_update(self.name)
-
-
-class CustomUpdateOnBatchEndNotFirst(Callback):
-    """Callback that triggers a GeNN custom update 
-    at the end of every batch after the first."""
-    def __init__(self, name: str):
-        self.name = name
-
-    def set_params(self, compiled_network, **kwargs):
-        # Extract compiled network
-        self._compiled_network = compiled_network
-        
-    def on_batch_end(self, batch, metrics):
-        if batch > 0:
-            logger.debug(f"Running custom update {self.name} "
-                         f"at end of batch {batch}")
-            self._compiled_network.genn_model.custom_update(self.name)
-
-class CustomUpdateOnFirstBatchEnd(Callback):
-    """Callback that triggers a GeNN custom update 
-    at the end of first batch."""
-    def __init__(self, name: str):
-        self.name = name
-
-    def set_params(self, compiled_network, **kwargs):
-        # Extract compiled network
-        self._compiled_network = compiled_network
-        
-    def on_batch_end(self, batch, metrics):
-        if batch == 0:
-            logger.debug(f"Running custom update {self.name} "
-                         f"at end of batch {batch}")
-            self._compiled_network.genn_model.custom_update(self.name)
 
 # Standard EventProp weight update model
 # **NOTE** feedback is added if required
@@ -1237,16 +1188,20 @@ class EventPropCompiler(Compiler):
 
         # If Deep-R and L1 regularisation are required, add callback
         if deep_r_required and self.deep_r_l1_strength > 0.0:
-            base_train_callbacks.append(CustomUpdateOnBatchEnd("DeepRL1"))
+            base_train_callbacks.append(
+                CustomUpdateOnBatchEnd("DeepRL1", lambda batch: batch > 0))
 
         if len(weight_optimiser_cus) > 0 or len(delay_optimiser_cus) > 0:
             if self.full_batch_size > 1:
                 base_train_callbacks.append(
-                    CustomUpdateOnBatchEndNotFirst("GradientBatchReduce"))
+                    CustomUpdateOnBatchEnd("GradientBatchReduce",
+                                           lambda batch: batch > 0))
             base_train_callbacks.append(
-                CustomUpdateOnBatchEndNotFirst("GradientLearn"))
+                CustomUpdateOnBatchEnd("GradientLearn",
+                                       lambda batch: batch > 0))
             base_train_callbacks.append(
-                CustomUpdateOnFirstBatchEnd("ZeroGradient"))
+                CustomUpdateOnBatchEnd("ZeroGradient",
+                                       lambda batch: batch == 0))
 
         # Add callbacks to set Trial extra global parameter 
         # on populations which require it
@@ -1254,10 +1209,13 @@ class EventPropCompiler(Compiler):
             base_train_callbacks.append(UpdateTrial(neuron_populations[p]))
 
         # Add callbacks to zero out post on all connections
+        last_timestep = self.example_timesteps - 1
         base_train_callbacks.append(
-            CustomUpdateOnLastTimestep("ZeroOutPost", self.example_timesteps))
+            CustomUpdateOnTimestepBegin("ZeroOutPost",
+                                        lambda t: t == last_timestep))
         base_validate_callbacks.append(
-            CustomUpdateOnLastTimestep("ZeroOutPost", self.example_timesteps))
+            CustomUpdateOnTimestepBegin("ZeroOutPost",
+                                        lambda t: t == last_timestep))
 
         # If softmax calculation is required at end of batch, add callbacks
         if len(compile_state.batch_softmax_populations) > 0:
@@ -1282,7 +1240,8 @@ class EventPropCompiler(Compiler):
 
         # If Deep-R is required, trigger Deep-R callbacks at end of batch
         if deep_r_required:
-            base_train_callbacks.append(CustomUpdateOnTrainBegin("DeepRInit"))
+            base_train_callbacks.append(CustomUpdateOnEpochBegin("DeepRInit",
+                                                                 lambda e: e == 0))
             base_train_callbacks.append(CustomUpdateOnBatchEnd("DeepR1"))
             base_train_callbacks.append(CustomUpdateOnBatchEnd("DeepR2"))
     
