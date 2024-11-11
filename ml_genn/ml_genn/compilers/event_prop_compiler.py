@@ -158,11 +158,12 @@ class CompileState:
                                                  "RingReadEndOffset"))
 
                 # Add additional update code to update ring buffer offsets
+                max_spikes = compiler.pop_max_spikes.get(pop, compiler.max_spikes)
                 model.append_update_code(
                     f"""
                     RingReadOffset = RingWriteOffset - 1;
                     if (RingReadOffset < 0) {{
-                        RingReadOffset = {compiler.max_spikes - 1};
+                        RingReadOffset = {max_spikes - 1};
                     }}
                     RingReadEndOffset = RingWriteStartOffset;
                     RingWriteStartOffset = RingReadOffset;
@@ -491,6 +492,7 @@ class EventPropCompiler(Compiler):
     def __init__(self, example_timesteps: int, losses, optimiser="adam",
                  reg_lambda_upper: float = 0.0, reg_lambda_lower: float = 0.0,
                  reg_nu_upper: float = 0.0, max_spikes: int = 500,
+                 pop_max_spikes: dict = {},
                  strict_buffer_checking: bool = False,
                  per_timestep_loss: bool = False, dt: float = 1.0,
                  batch_size: int = 1, rng_seed: int = 0,
@@ -523,6 +525,8 @@ class EventPropCompiler(Compiler):
             Optimiser, "Optimiser", default_optimisers)
         self.delay_learn_conns = set(get_underlying_conn(c)
                                      for c in delay_learn_conns)
+        self.pop_max_spikes = {get_underlying_pop(p): m
+                               for p, m in pop_max_spikes.items()}
 
     def pre_compile(self, network: Network, 
                     genn_model, **kwargs) -> CompileState:
@@ -562,6 +566,9 @@ class EventPropCompiler(Compiler):
                            compile_state: CompileState) -> NeuronModel:
         # Make copy of model
         model_copy = deepcopy(model)
+        
+        # Get maximum spikes for this population
+        max_spikes = self.pop_max_spikes.get(pop, self.max_spikes)
 
         # If population has a readout i.e. it's an output
         if pop.neuron.readout is not None:
@@ -811,21 +818,21 @@ class EventPropCompiler(Compiler):
             # Add variables to hold offsets for 
             # reading and writing ring variables
             model_copy.add_var("RingWriteOffset", "int", 0)
-            model_copy.add_var("RingReadOffset", "int", self.max_spikes - 1)
+            model_copy.add_var("RingReadOffset", "int", max_spikes - 1)
 
             # Add variables to hold offsets where this neuron
             # started writing to ring during the forward
             # pass and where data to read during backward pass ends
             model_copy.add_var("RingWriteStartOffset", "int",
-                               self.max_spikes - 1)
+                               max_spikes - 1)
             model_copy.add_var("RingReadEndOffset", "int", 
-                               self.max_spikes - 1)
+                               max_spikes - 1)
 
             # Add variable to hold backspike flag
             model_copy.add_var("BackSpike", "uint8_t", False)
 
             # Add EGP for spike time ring variables
-            ring_size = self.batch_size * np.prod(pop.shape) * self.max_spikes
+            ring_size = self.batch_size * np.prod(pop.shape) * max_spikes
             model_copy.add_egp("RingSpikeTime", "scalar*", 
                                np.empty(ring_size, dtype=np.float32))
 
@@ -840,7 +847,7 @@ class EventPropCompiler(Compiler):
                 # backwards pass and handle back spikes
                 model_copy.prepend_sim_code(
                     neuron_backward_pass.substitute(
-                        max_spikes=self.max_spikes,
+                        max_spikes=max_spikes,
                         example_time=(self.example_timesteps * self.dt),
                         dynamics="",
                         transition=""))
@@ -848,7 +855,7 @@ class EventPropCompiler(Compiler):
                 # Prepend code to reset to write spike time to ring buffer
                 model_copy.prepend_reset_code(
                     neuron_reset.substitute(
-                        max_spikes=self.max_spikes,
+                        max_spikes=max_spikes,
                         write="",
                         strict_check=(neuron_reset_strict_check
                                       if self.strict_buffer_checking
@@ -948,7 +955,7 @@ class EventPropCompiler(Compiler):
                     # and handle back spikes with correct LIF dynamics
                     model_copy.prepend_sim_code(
                         neuron_backward_pass.substitute(
-                            max_spikes=self.max_spikes,
+                            max_spikes=max_spikes,
                             example_time=(self.example_timesteps * self.dt),
                             dynamics="""
                             LambdaI = (A * LambdaV * (Beta - Alpha)) + (LambdaI * Beta);
@@ -960,7 +967,7 @@ class EventPropCompiler(Compiler):
                     # code to reset to write spike time and I-V to ring buffer
                     model_copy.prepend_reset_code(
                         neuron_reset.substitute(
-                            max_spikes=self.max_spikes,
+                            max_spikes=max_spikes,
                             write="RingIMinusV[ringOffset + RingWriteOffset] = Isyn - V;",
                             strict_check=(neuron_reset_strict_check 
                                           if self.strict_buffer_checking
@@ -1082,7 +1089,9 @@ class EventPropCompiler(Compiler):
                     wum.append_pre_event_syn_code("addToPre(g * (LambdaV_post[delay] - LambdaI_post[delay]));")
                 else:
                     wum.add_post_neuron_var_ref("LambdaV_post", "scalar", "LambdaV")
-                    
+                    if not connect_snippet.trainable:
+                        wum.add_post_neuron_var_ref("LambdaI_post", "scalar", "LambdaI")
+
                     if has_delay:
                         wum.append_pre_event_syn_code("addToPre(g * (LambdaV_post[d] - LambdaI_post[d]));")
                     else:
