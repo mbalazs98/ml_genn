@@ -11,7 +11,7 @@ from .compiled_training_network import CompiledTrainingNetwork
 from .. import Connection, Population, Network
 from ..callbacks import (BatchProgressBar, Callback, CustomUpdateOnBatchBegin,
                          CustomUpdateOnBatchEnd, CustomUpdateOnEpochEnd,
-                         CustomUpdateOnTimestepEnd)
+                         CustomUpdateOnTimestepEnd, LearnPosition, DeriveDelay)
 from ..communicators import Communicator
 from ..connection import Connection
 from ..losses import (Loss, MeanSquareError, RelativeMeanSquareError,
@@ -272,6 +272,7 @@ class CompileState:
                                          Loss, "Loss", default_losses)
         self.backend_name = backend_name
         self._optimiser_connections = []
+        self._position_optimiser_populations = []
         self._neuron_reset_vars = []
         self.ttfs_reduce_populations = []
         self.checkpoint_connection_vars = []
@@ -284,6 +285,9 @@ class CompileState:
 
     def add_optimiser_connection(self, conn, weight, delay):
         self._optimiser_connections.append((conn, weight, delay))
+    
+    def add_position_optimiser_populations(self, pop, position):
+        self._position_optimiser_populations.append((pop, position))
 
     def add_neuron_reset_vars(self, pop, reset_vars, 
                               reset_event_ring, reset_v_ring):
@@ -350,6 +354,10 @@ class CompileState:
     @property
     def optimiser_connections(self):
         return self._optimiser_connections
+    
+    @property
+    def position_optimiser_populations(self):
+        return self._position_optimiser_populations
 
     @property
     def is_reset_custom_update_required(self):
@@ -508,7 +516,15 @@ class EventPropCompiler(Compiler):
                                     None, ``optimiser`` will be used for delays
         delay_learn_conns:          Connection for which delays should be 
                                     learned as well as weight
-        
+        x_optimiser:                Optimiser to use when applying x dimensions. If 
+                                    None, ``optimiser`` will be used for x dimension
+        y_optimiser:                Optimiser to use when applying y dimensions. If 
+                                    None, ``optimiser`` will be used for y dimension
+        z_optimiser:                Optimiser to use when applying x dimensions. If 
+                                    None, ``optimiser`` will be used for z dimension
+        pops_and_conns:             Populations and pre and post connections with positions
+        conns_and_pops:             Connections and positions with positions
+        pos_init:                   Init neurons here
     """
 
     def __init__(self, example_timesteps: int, losses, optimiser="adam",
@@ -522,6 +538,12 @@ class EventPropCompiler(Compiler):
                  communicator: Communicator = None,
                  delay_optimiser=None,
                  delay_learn_conns: Sequence = [],
+                 x_optimiser = None,
+                 y_optimiser = None,
+                 z_optimiser = None,
+                 pops_and_conns: tuple = (),
+                 conns_and_pops: tuple = (),
+                 pos_init: dict={},
                  **genn_kwargs):
         supported_matrix_types = [SynapseMatrixType.TOEPLITZ,
                                   SynapseMatrixType.PROCEDURAL_KERNELG,
@@ -547,8 +569,22 @@ class EventPropCompiler(Compiler):
         self._delay_optimiser = get_object(
             optimiser if delay_optimiser is None else delay_optimiser, 
             Optimiser, "Optimiser", default_optimisers)
+        self._x_optimiser = get_object(
+            optimiser if x_optimiser is None else x_optimiser, 
+            Optimiser, "Optimiser", default_optimisers)
+        self._y_optimiser = get_object(
+            optimiser if y_optimiser is None else y_optimiser, 
+            Optimiser, "Optimiser", default_optimisers)
+        self._z_optimiser = get_object(
+            optimiser if z_optimiser is None else z_optimiser, 
+            Optimiser, "Optimiser", default_optimisers)
         self.delay_learn_conns = set(get_underlying_conn(c)
                                      for c in delay_learn_conns)
+        self.pops_and_conns = ([get_underlying_pop(p) for p in pops_and_conns[0]],
+                                    ([[get_underlying_conn(c) for c in conns] for conns in pops_and_conns[1]], [[get_underlying_conn(c) for c in conns] for conns in pops_and_conns[2]]))
+        self.conns_and_pops = ([get_underlying_conn(c) for c in conns_and_pops[0]],
+                                    ([get_underlying_pop(p) for p in conns_and_pops[1]], [get_underlying_pop(p) for p in conns_and_pops[2]]))
+        self.pos_init = pos_init
 
     def pre_compile(self, network: Network, 
                     genn_model, **kwargs) -> CompileState:
@@ -580,6 +616,15 @@ class EventPropCompiler(Compiler):
         # Make copy of model
         model_copy = deepcopy(model)
 
+        if pop in self.pops_and_conns[0]:
+            model_copy.add_var("XPos", "scalar", self.pos_init[pop][0], VarAccess.READ_ONLY)
+            model_copy.add_var("YPos", "scalar", self.pos_init[pop][0], VarAccess.READ_ONLY)
+            model_copy.add_var("ZPos", "scalar", self.pos_init[pop][0], VarAccess.READ_ONLY)
+            model_copy.add_var("XPosGradient", "scalar", 0.0, VarAccess.READ_ONLY_DUPLICATE)
+            model_copy.add_var("YPosGradient", "scalar", 0.0, VarAccess.READ_ONLY_DUPLICATE)
+            model_copy.add_var("ZPosGradient", "scalar", 0.0, VarAccess.READ_ONLY_DUPLICATE)
+            compile_state.add_position_optimiser_populations(pop, True)
+        
         # If population has a readout i.e. it's an output
         if pop.neuron.readout is not None:
             sce_loss = isinstance(compile_state.losses[pop], SparseCategoricalCrossentropy)
@@ -1211,9 +1256,11 @@ class EventPropCompiler(Compiler):
     def build_weight_update_model(self, conn: Connection,
                                   connect_snippet: ConnectivitySnippet,
                                   compile_state: CompileState) -> WeightUpdateModel:
+        
         # Does this connection have a delay?
         has_delay = (not is_value_constant(connect_snippet.delay)
                      or connect_snippet.delay > 0)
+        
         
         # Does this connection have learnable delays
         has_learnable_delay = conn in self.delay_learn_conns
@@ -1328,6 +1375,30 @@ class EventPropCompiler(Compiler):
         # Loop through connections that require optimisers
         weight_optimiser_cus = []
         delay_optimiser_cus = []
+        position_x_optimiser_cus = []
+        position_y_optimiser_cus = []
+        position_z_optimiser_cus = []
+
+        for i, (pop, pos) in enumerate(compile_state.position_optimiser_populations):
+            # If position optimiser is required
+            gradient_vars_neuron = []
+            genn_pop = neuron_populations[pop]
+            if pos:
+                cu_position_x = self._create_optimiser_custom_update(
+                    f"X{i}", create_var_ref(genn_pop, "XPos"), create_var_ref(genn_pop, "XPosGradient"),
+                    self._x_optimiser, genn_model, wu=False)
+                position_x_optimiser_cus.append(cu_position_x)
+                gradient_vars_neuron.append(("XPosGradient", "scalar", 0.0))
+                cu_position_y = self._create_optimiser_custom_update(
+                    f"Y{i}", create_var_ref(genn_pop, "YPos"), create_var_ref(genn_pop, "YPosGradient"),
+                    self._y_optimiser, genn_model, wu=False)
+                position_y_optimiser_cus.append(cu_position_y)
+                gradient_vars_neuron.append(("YPosGradient", "scalar", 0.0))
+                cu_position_z = self._create_optimiser_custom_update(
+                    f"Z{i}", create_var_ref(genn_pop, "ZPos"), create_var_ref(genn_pop, "ZPosGradient"),
+                    self._z_optimiser, genn_model, wu=False)
+                position_z_optimiser_cus.append(cu_position_z)
+                gradient_vars_neuron.append(("ZPosGradient", "scalar", 0.0))
         for i, (c, w, d) in enumerate(compile_state.optimiser_connections):
             genn_pop = connection_populations[c]
             
@@ -1347,7 +1418,7 @@ class EventPropCompiler(Compiler):
                 gradient_vars.append(("Gradient", "scalar", 0.0))
             
             # If delay optimiser is required
-            if d:
+            if d and c not in self.pops_and_conns[1][0] and c not in self.pops_and_conns[1][0]:
                 # Create delay optimiser custom update
                 cu_delay = self._create_optimiser_custom_update(
                     f"Delay{i}", create_wu_var_ref(genn_pop, "d"),
@@ -1411,7 +1482,9 @@ class EventPropCompiler(Compiler):
         # Build list of base callbacks
         base_train_callbacks = []
         base_validate_callbacks = []
-        if len(weight_optimiser_cus) > 0 or len(delay_optimiser_cus) > 0:
+        if len(weight_optimiser_cus) > 0 or len(delay_optimiser_cus) > 0 or len(position_x_optimiser_cus) > 0 or len(position_y_optimiser_cus) > 0 or len(position_z_optimiser_cus) > 0:
+            for pop, pre_conns, post_conns in zip(self.pops_and_conns[0], self.pops_and_conns[1][0], self.pops_and_conns[1][1]):
+                base_train_callbacks.append(LearnPosition(pop, pre_conns, post_conns))
             if self.full_batch_size > 1:
                 base_train_callbacks.append(
                     CustomUpdateOnBatchEndNotFirst("GradientBatchReduce"))
@@ -1419,6 +1492,8 @@ class EventPropCompiler(Compiler):
                 CustomUpdateOnBatchEndNotFirst("GradientLearn"))
             base_train_callbacks.append(
                 CustomUpdateOnFirstBatchEnd("ZeroGradient"))
+            for conn, pop1, pop2 in zip(self.conns_and_pops[0], self.conns_and_pops[1][0], self.conns_and_pops[1][1]):
+                base_train_callbacks.append(DeriveDelay(conn, pop1, pop2))
 
         # Add callbacks to set Trial extra global parameter 
         # on populations which require it
@@ -1462,6 +1537,10 @@ class EventPropCompiler(Compiler):
             optimisers.append((self._optimiser, weight_optimiser_cus))
         if len(delay_optimiser_cus) > 0:
             optimisers.append((self._delay_optimiser, delay_optimiser_cus))
+        if len(position_x_optimiser_cus) > 0:
+            optimisers.append((self._x_optimiser, position_x_optimiser_cus))
+            optimisers.append((self._y_optimiser, position_y_optimiser_cus))
+            optimisers.append((self._z_optimiser, position_z_optimiser_cus))
 
         return CompiledTrainingNetwork(
             genn_model, neuron_populations, connection_populations,
@@ -1531,7 +1610,7 @@ class EventPropCompiler(Compiler):
     
     def _create_optimiser_custom_update(self, name_suffix, var_ref, 
                                         gradient_ref, optimiser, genn_model,
-                                        clamp_var=None):
+                                        clamp_var=None, wu=True):
         # If batch size is greater than 1
         if self.full_batch_size > 1:
             # Create custom update model to reduce Gradient into a variable 
@@ -1546,8 +1625,10 @@ class EventPropCompiler(Compiler):
 
             # Create optimiser model without gradient zeroing
             # logic, connected to reduced gradient
-            reduced_gradient = create_wu_var_ref(genn_reduction,
-                                                 "ReducedGradient")
+            reduced_gradient = (create_wu_var_ref(genn_reduction,
+                                                  "ReducedGradient") if wu
+                                else create_var_ref(genn_reduction, 
+                                                    "ReducedGradient"))
             optimiser_model = optimiser.get_model(reduced_gradient, var_ref,
                                                   False, clamp_var)
         # Otherwise
