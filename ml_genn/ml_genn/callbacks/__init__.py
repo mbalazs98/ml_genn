@@ -11,11 +11,13 @@ from .spike_recorder import SpikeRecorder
 from .var_recorder import VarRecorder
 from .conn_var_recorder import ConnVarRecorder
 from ..utils.module import get_module_classes
+from .position_learning import LearnPosition
+from .derive_delay import DeriveDelay
 
 default_callbacks = get_module_classes(globals(), Callback)
 
 __all__ = ["Callback", "Checkpoint", "ConnVarRecorder", 
            "CustomUpdateOnBatchBegin", "CustomUpdateOnBatchEnd", 
            "CustomUpdateOnTimestepBegin", "CustomUpdateOnTimestepEnd", 
-           "OptimiserParamSchedule", "BatchProgressBar", "SpikeRecorder",
+           "OptimiserParamSchedule", "BatchProgressBar", "SpikeRecorder", "LearnPosition", "DeriveDelay"
            "VarRecorder", "default_callbacks"]
