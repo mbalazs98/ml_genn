@@ -3,6 +3,7 @@ import numpy as np
 
 from string import Template
 from typing import Iterator, Sequence
+from numbers import Number
 from pygenn import (CustomUpdateVarAccess, VarAccess, VarAccessMode,
                     SynapseMatrixType, SynapseMatrixWeight)
 
@@ -1104,7 +1105,7 @@ class EventPropCompiler(Compiler):
 
                     # If regularisation is enabled
                     # **THINK** is this LIF-specific?
-                    if self.regulariser_enabled:
+                    if self.regulariser_enabled(pop):
                         # Add state variables to hold spike count
                         # during forward and backward pass. 
                         # **NOTE** SpikeCountBackSum is shared across
@@ -1124,11 +1125,11 @@ class EventPropCompiler(Compiler):
                         # into account that we're operating on batch sums of spike counts
                         model_copy.add_param(
                             "RegLambdaUpper", "scalar",
-                            self.reg_lambda_upper / (self.full_batch_size
+                            self.get_lambda(self.reg_lambda_upper, pop) / (self.full_batch_size
                                                      * self.full_batch_size))
                         model_copy.add_param(
                             "RegLambdaLower", "scalar",
-                            self.reg_lambda_lower / (self.full_batch_size
+                            self.get_lambda(self.reg_lambda_lower, pop) / (self.full_batch_size
                                                      * self.full_batch_size))
 
                         # If batch size is 1, add reset variables
@@ -1471,10 +1472,18 @@ class EventPropCompiler(Compiler):
             compile_state.checkpoint_connection_vars,
             compile_state.checkpoint_population_vars, True)
 
-    @property
-    def regulariser_enabled(self):
-        return (self.reg_lambda_lower != 0.0 
-                or self.reg_lambda_upper != 0.0)
+    def get_lambda(self, reg_lambda, pop):
+        if isinstance(reg_lambda, Number):
+            return reg_lambda
+        elif pop in reg_lambda:
+            return reg_lambda[pop]
+        return 0.0
+    
+    def regulariser_enabled(self, pop: Population):
+
+        upper = self.get_lambda(self.reg_lambda_upper, pop)
+        lower = self.get_lambda(self.reg_lambda_lower, pop)
+        return (upper != 0.0) or (lower != 0.0)
 
     def _add_softmax_buffer_custom_updates(self, genn_model, genn_pop, 
                                            input_var_name: str):
