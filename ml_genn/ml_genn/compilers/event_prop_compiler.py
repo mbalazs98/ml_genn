@@ -468,10 +468,16 @@ class EventPropCompiler(Compiler):
                                     to output populations or a single loss
                                     function to apply to all outputs
         optimiser:                  Optimiser to use when applying weights
-        reg_lambda_upper:           Regularisation strength, should typically
-                                    be the same as ``reg_lambda_lower``.
-        reg_lambda_lower:           Regularisation strength, should typically
-                                    be the same as ``reg_lambda_upper``.
+        reg_lambda_upper:           Regularisation strength. Can be specified as 
+                                    a single float (applied to all populations)
+                                    or as a dictionary mapping populations to values 
+                                    (to set different strengths per population).
+                                    Should typically be the same as ``reg_lambda_lower``.
+        reg_lambda_lower:           Regularisation strength. Can be specified as 
+                                    a single float (applied to all populations)
+                                    or as a dictionary mapping populations to values 
+                                    (to set different strengths per population).
+                                    Should typically be the same as ``reg_lambda_upper``.
         reg_nu_upper:               Target number of hidden neuron
                                     spikes used for regularisation
         max_spikes:                 What is the maximum number of spikes each
@@ -513,7 +519,7 @@ class EventPropCompiler(Compiler):
     """
 
     def __init__(self, example_timesteps: int, losses, optimiser="adam",
-                 reg_lambda_upper: float = 0.0, reg_lambda_lower: float = 0.0,
+                 reg_lambda_upper: dict = {}, reg_lambda_lower: dict = {},
                  reg_nu_upper: float = 0.0, max_spikes: int = 500,
                  strict_buffer_checking: bool = False,
                  per_timestep_loss: bool = False, dt: float = 1.0,
@@ -536,7 +542,13 @@ class EventPropCompiler(Compiler):
         self.example_timesteps = example_timesteps
         self.losses = losses
         self.reg_lambda_upper = reg_lambda_upper
+        if isinstance(self.reg_lambda_upper, dict):
+            self.reg_lambda_upper = {get_underlying_pop(p): r 
+                            for p, r in self.reg_lambda_upper.items()}
         self.reg_lambda_lower = reg_lambda_lower
+        if isinstance(self.reg_lambda_lower, dict):
+            self.reg_lambda_lower = {get_underlying_pop(p): r 
+                            for p, r in self.reg_lambda_lower.items()}
         self.reg_nu_upper = reg_nu_upper
         self.max_spikes = max_spikes
         self.strict_buffer_checking = strict_buffer_checking
