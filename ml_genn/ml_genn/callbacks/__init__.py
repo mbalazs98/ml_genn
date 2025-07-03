@@ -13,11 +13,13 @@ from .conn_var_recorder import ConnVarRecorder
 from ..utils.module import get_module_classes
 from .position_learning import LearnPosition
 from .derive_delay import DeriveDelay
+from .fix_connections import FixConnections
 
 default_callbacks = get_module_classes(globals(), Callback)
 
 __all__ = ["Callback", "Checkpoint", "ConnVarRecorder", 
            "CustomUpdateOnBatchBegin", "CustomUpdateOnBatchEnd", 
            "CustomUpdateOnTimestepBegin", "CustomUpdateOnTimestepEnd", 
-           "OptimiserParamSchedule", "BatchProgressBar", "SpikeRecorder", "LearnPosition", "DeriveDelay"
+           "OptimiserParamSchedule", "BatchProgressBar", "SpikeRecorder", 
+           "LearnPosition", "DeriveDelay", "FixConnections",
            "VarRecorder", "default_callbacks"]
