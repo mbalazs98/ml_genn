@@ -11,7 +11,7 @@ from .compiled_training_network import CompiledTrainingNetwork
 from .. import Connection, Population, Network
 from ..callbacks import (BatchProgressBar, Callback, CustomUpdateOnBatchBegin,
                          CustomUpdateOnBatchEnd, CustomUpdateOnEpochEnd,
-                         CustomUpdateOnTimestepEnd, LearnPosition, DeriveDelay)
+                         CustomUpdateOnTimestepEnd, LearnPosition, DeriveDelay, FixConnections)
 from ..communicators import Communicator
 from ..connection import Connection
 from ..losses import (Loss, MeanSquareError, RelativeMeanSquareError,
@@ -524,7 +524,9 @@ class EventPropCompiler(Compiler):
                                     None, ``optimiser`` will be used for z dimension
         pops_and_conns:             Populations and pre and post connections with positions
         conns_and_pops:             Connections and positions with positions
-        pos_init:                   Init neurons here
+        pos_init:                   Init neurons positions here
+        weight_fix_conns:           Connection for which parameters should not be 
+                                    learned
     """
 
     def __init__(self, example_timesteps: int, losses, optimiser="adam",
@@ -544,6 +546,7 @@ class EventPropCompiler(Compiler):
                  pops_and_conns: tuple = (),
                  conns_and_pops: tuple = (),
                  pos_init: dict={},
+                 weight_fix_conns: Sequence = [],
                  **genn_kwargs):
         supported_matrix_types = [SynapseMatrixType.TOEPLITZ,
                                   SynapseMatrixType.PROCEDURAL_KERNELG,
@@ -585,6 +588,7 @@ class EventPropCompiler(Compiler):
         self.conns_and_pops = ([get_underlying_conn(c) for c in conns_and_pops[0]],
                                     ([get_underlying_pop(p) for p in conns_and_pops[1]], [get_underlying_pop(p) for p in conns_and_pops[2]]))
         self.pos_init = pos_init
+        self.weight_fix_conns = set(get_underlying_conn(c) for c in weight_fix_conns)
 
     def pre_compile(self, network: Network, 
                     genn_model, **kwargs) -> CompileState:
@@ -1488,6 +1492,8 @@ class EventPropCompiler(Compiler):
             if self.full_batch_size > 1:
                 base_train_callbacks.append(
                     CustomUpdateOnBatchEndNotFirst("GradientBatchReduce"))
+            for conn in self.weight_fix_conns:
+                base_train_callbacks.append(FixConnections(conn))
             base_train_callbacks.append(
                 CustomUpdateOnBatchEndNotFirst("GradientLearn"))
             base_train_callbacks.append(
