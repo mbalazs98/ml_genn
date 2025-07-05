@@ -622,8 +622,8 @@ class EventPropCompiler(Compiler):
 
         if pop in self.pops_and_conns[0]:
             model_copy.add_var("XPos", "scalar", self.pos_init[pop][0], VarAccess.READ_ONLY)
-            model_copy.add_var("YPos", "scalar", self.pos_init[pop][0], VarAccess.READ_ONLY)
-            model_copy.add_var("ZPos", "scalar", self.pos_init[pop][0], VarAccess.READ_ONLY)
+            model_copy.add_var("YPos", "scalar", self.pos_init[pop][1], VarAccess.READ_ONLY)
+            model_copy.add_var("ZPos", "scalar", self.pos_init[pop][2], VarAccess.READ_ONLY)
             model_copy.add_var("XPosGradient", "scalar", 0.0, VarAccess.READ_ONLY_DUPLICATE)
             model_copy.add_var("YPosGradient", "scalar", 0.0, VarAccess.READ_ONLY_DUPLICATE)
             model_copy.add_var("ZPosGradient", "scalar", 0.0, VarAccess.READ_ONLY_DUPLICATE)
