@@ -120,16 +120,16 @@ learnable_delay_weight_update_model = {
     "post_neuron_var_refs": [("LambdaI_post", "scalar"), ("LambdaV_post", "scalar")],
                              
     "pre_spike_syn_code": """
-    const int delay = max(0, min(MaxDelay, (int)round(d)));
+    const int delay = (int)floor(MaxDelay/(1+exp(-d)));
     addToPostDelay(g, delay);
     """,
     "pre_event_threshold_condition_code": """
     BackSpike_pre
     """,
     "pre_event_syn_code": """
-    const int delay = max(0, min(MaxDelay, (int)round(d)));
+    const int delay = (int)floor(MaxDelay/(1+exp(-d)));
     Gradient -= (LambdaI_post[delay] * TauSyn);
-    DelayGradient -= g * (LambdaI_post[delay] - LambdaV_post[delay]);
+    DelayGradient -= (g * (LambdaI_post[delay] - LambdaV_post[delay]) * MaxDelay * exp(d))/((exp(d)+1)*(exp(d)+1));
     """}
 
 # Weight update model used on non-trainable connections
@@ -1352,8 +1352,7 @@ class EventPropCompiler(Compiler):
                 cu_delay = self._create_optimiser_custom_update(
                     f"Delay{i}", create_wu_var_ref(genn_pop, "d"),
                     create_wu_var_ref(genn_pop, "DelayGradient"),
-                    self._delay_optimiser, genn_model,
-                    (0.0, c.max_delay_steps))
+                    self._delay_optimiser, genn_model)
 
                 # Add custom update to list of optimisers
                 delay_optimiser_cus.append(cu_delay)
