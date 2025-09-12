@@ -27,7 +27,7 @@ class DeriveDelay(Callback):
         self._conn = get_underlying_conn(conn)
         self._pop1 = get_underlying_pop(pop1)
         self._pop2 = get_underlying_pop(pop2)
-        
+
 
     def set_params(self, data, compiled_network, **kwargs):
         self._compiled_network = compiled_network
@@ -63,8 +63,3 @@ class DeriveDelay(Callback):
                 conn.vars["d"].pull_from_device()
                 conn.vars["d"].values = dist.flatten()
             conn.vars["d"].push_to_device()
-        
-        
-            
-
-
