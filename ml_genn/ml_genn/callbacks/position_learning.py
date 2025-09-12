@@ -22,12 +22,15 @@ class LearnPosition(Callback):
     Args:
         conn:               Synapse population to record from        
     """
-    def __init__(self, pop: Population, pre_conns: Sequence[Connection], post_conns: Sequence[Connection]):
+    def __init__(self, pop: Population, pre_conns: Sequence[tuple], post_conns: Sequence[tuple], num_dims: int):
         # Get underlying connection
-        self._pre_conns = [get_underlying_conn(conn) for conn in pre_conns]
-        self._post_conns = [get_underlying_conn(conn) for conn in post_conns]
         self._pop = get_underlying_pop(pop)
-        
+        self._pre_conns = [get_underlying_conn(conn[0]) for conn in pre_conns]
+        self._pre_pops = [get_underlying_pop(pop[1]) for pop in pre_conns]
+        self._post_conns = [get_underlying_conn(conn[0]) for conn in post_conns]
+        self._post_pops = [get_underlying_pop(pop[1]) for pop in post_conns]
+        self._num_dims = num_dims
+
 
     def set_params(self, data, compiled_network, **kwargs):
         self._compiled_network = compiled_network
@@ -36,65 +39,65 @@ class LearnPosition(Callback):
     def on_batch_end(self, batch, _):
         if batch > 0:
             pop = self._compiled_network.neuron_populations[self._pop]
-            pop.vars["XPosGradient"].pull_from_device()
-            xpos_gradients = pop.vars["XPosGradient"].view
-            pop.vars["YPosGradient"].pull_from_device()
-            ypos_gradients = pop.vars["YPosGradient"].view
-            pop.vars["ZPosGradient"].pull_from_device()
-            zpos_gradients = pop.vars["ZPosGradient"].view
-            pop.vars["XPos"].pull_from_device()
-            pop.vars["YPos"].pull_from_device()
-            pop.vars["ZPos"].pull_from_device()
-            x_pos = pop.vars["XPos"].view
-            y_pos = pop.vars["YPos"].view
-            z_pos = pop.vars["ZPos"].view
-            for _conn in self._pre_conns:
+            pos_gradients, positions = [], []
+            for i in range(self._num_dims):
+                pop.vars["PosGradient"+str(i)].pull_from_device()
+                pos_gradients.append(pop.vars["PosGradient"+str(i)].view)
+                pop.vars["Pos"+str(i)].pull_from_device()
+                positions.append(pop.vars["Pos"+str(i)].view)
+            for _conn, _pop in zip(self._pre_conns, self._pre_pops):
                 conn = self._compiled_network.connection_populations[_conn]
-                pre_ind = conn.get_sparse_pre_inds()
+                pre_pop = self._compiled_network.neuron_populations[_pop]
+                pre_pos = []
+                for i in range(self._num_dims):
+                    pre_pop.vars["Pos"+str(i)].pull_from_device()
+                    pre_pos.append(pre_pop.vars["Pos"+str(i)].view)
                 conn.vars["d"].pull_from_device()
                 conn.vars["DelayGradient"].pull_from_device()
                 if conn.matrix_type & SynapseMatrixConnectivity.SPARSE:
                     pre_ind = conn.get_sparse_pre_inds()
+                    post_ind = conn.get_sparse_post_inds()
                     delays = conn.vars["d"].values + 1e-8
-                    delay_gradients = conn.vars["DelayGradient"].values
-                    weighted_grad = delay_gradients / delays
-                    gradient_pos = np.zeros((xpos_gradients.shape), dtype=delay_gradients.dtype)
-                    np.add.at(gradient_pos, (slice(None), pre_ind), weighted_grad)
+                    gradients = conn.vars["DelayGradient"].values
+                    for i in range(self._num_dims):
+                        gradient_pos = np.zeros_like(pos_gradients[i])
+                        np.add.at(
+                            gradient_pos,
+                            (np.arange(gradients.shape[0])[:, None], post_ind[None, :]),
+                            gradients / delays * (positions[i][post_ind] - pre_pos[i][pre_ind])
+                        )
+                        pos_gradients[i] += gradient_pos
                 else:
                     delays = conn.vars["d"].view.reshape(_conn.source().shape[0], _conn.target().shape[0])  + 1e-8
                     gradients = conn.vars["DelayGradient"].view.reshape(-1, _conn.source().shape[0], _conn.target().shape[0])
-                    gradients = gradients / delays
-                    gradient_pos = gradients.sum(1)
-                xpos_gradients += (x_pos - 1) * gradient_pos
-                ypos_gradients += (y_pos - 1) * gradient_pos
-                zpos_gradients += (z_pos - 1) * gradient_pos
-            for _conn in self._post_conns:
+                    for i in range(self._num_dims):
+                        pos_gradients[i] += (gradients / delays * (positions[i][:, None] - pre_pos[i][None, :])).sum(1)
+            for _conn, _pop in zip(self._post_conns, self._post_pops):
                 conn = self._compiled_network.connection_populations[_conn]
+                post_pop = self._compiled_network.neuron_populations[_pop]
+                post_pos = []
+                for i in range(self._num_dims):
+                    post_pop.vars["Pos"+str(i)].pull_from_device()
+                    post_pos.append(post_pop.vars["Pos"+str(i)].view)
                 conn.vars["d"].pull_from_device()
                 conn.vars["DelayGradient"].pull_from_device()
                 if conn.matrix_type & SynapseMatrixConnectivity.SPARSE:
+                    pre_ind = conn.get_sparse_pre_inds()
                     post_ind = conn.get_sparse_post_inds()
                     delays = conn.vars["d"].values  + 1e-8
-                    delay_gradients = conn.vars["DelayGradient"].values
-                    weighted_grad = delay_gradients / delays
-                    gradient_pos = np.zeros((xpos_gradients.shape), dtype=delay_gradients.dtype)
-                    np.add.at(gradient_pos, (slice(None), post_ind), weighted_grad)
+                    gradients = conn.vars["DelayGradient"].values
+                    for i in range(self._num_dims):
+                        gradient_pos = np.zeros_like(pos_gradients[i])
+                        np.add.at(
+                            gradient_pos,
+                            (np.arange(gradients.shape[0])[:, None], pre_ind[None, :]),
+                            gradients / delays * (positions[i][pre_ind] - post_pos[i][post_ind])
+                        )
+                        pos_gradients[i] += gradient_pos
                 else:
                     delays = conn.vars["d"].view.reshape(_conn.source().shape[0], _conn.target().shape[0])  + 1e-8
                     gradients = conn.vars["DelayGradient"].view.reshape(-1, _conn.source().shape[0], _conn.target().shape[0])
-                    gradients = gradients / delays
-                    gradient_pos = gradients.sum(2)
-                xpos_gradients += (x_pos - 1) * gradient_pos
-                ypos_gradients += (y_pos - 1) * gradient_pos
-                zpos_gradients += (z_pos - 1) * gradient_pos
-            pop.vars["XPosGradient"].values = xpos_gradients
-            pop.vars["XPosGradient"].push_to_device()
-            pop.vars["YPosGradient"].values = ypos_gradients
-            pop.vars["YPosGradient"].push_to_device()
-            pop.vars["ZPosGradient"].values = zpos_gradients
-            pop.vars["ZPosGradient"].push_to_device()
-        
-        
-            
-
-
+                    pos_gradients[i] += (gradients / delays * (positions[i][:, None] - post_pos[i][None, :])).sum(2)
+            for i in range(self._num_dims):
+                pop.vars["PosGradient"+str(i)].values = pos_gradients[i]
+                pop.vars["PosGradient"+str(i)].push_to_device()
