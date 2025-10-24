@@ -14,6 +14,9 @@ from ..utils.module import get_module_classes
 from .position_learning import LearnPosition
 from .derive_delay import DeriveDelay
 from .fix_connections import FixConnections
+from .weightbump import WeightBump
+from .reg_l1 import RegL1
+from .axonaldelay import AxonalDelay
 
 default_callbacks = get_module_classes(globals(), Callback)
 
@@ -21,5 +24,5 @@ __all__ = ["Callback", "Checkpoint", "ConnVarRecorder",
            "CustomUpdateOnBatchBegin", "CustomUpdateOnBatchEnd", 
            "CustomUpdateOnTimestepBegin", "CustomUpdateOnTimestepEnd", 
            "OptimiserParamSchedule", "BatchProgressBar", "SpikeRecorder", 
-           "LearnPosition", "DeriveDelay", "FixConnections",
+           "LearnPosition", "DeriveDelay", "FixConnections", "RegL1", "AxonalDelay"
            "VarRecorder", "default_callbacks"]
