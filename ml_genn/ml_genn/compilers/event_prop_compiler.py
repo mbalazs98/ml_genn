@@ -11,7 +11,7 @@ from .compiled_training_network import CompiledTrainingNetwork
 from .. import Connection, Population, Network
 from ..callbacks import (BatchProgressBar, Callback, CustomUpdateOnBatchBegin,
                          CustomUpdateOnBatchEnd, CustomUpdateOnEpochEnd,
-                         CustomUpdateOnTimestepEnd, LearnPosition, DeriveDelay, FixConnections)
+                         CustomUpdateOnTimestepEnd, LearnPosition, DeriveDelay, FixConnections, RegL1, AxonalDelay)
 from ..communicators import Communicator
 from ..connection import Connection
 from ..losses import (Loss, MeanSquareError, RelativeMeanSquareError,
@@ -523,6 +523,7 @@ class EventPropCompiler(Compiler):
         pos_init:                   Init neurons positions here
         weight_fix_conns:           Connection for which parameters should not be 
                                     learned
+        delay_type:                 Type of delay to use
     """
 
     def __init__(self, example_timesteps: int, losses, optimiser="adam",
@@ -541,6 +542,10 @@ class EventPropCompiler(Compiler):
                  conns_and_pops: tuple = None,
                  pos_init: dict= None,
                  weight_fix_conns: Sequence = [],
+                 reg_conns: Sequence = [],
+                 l1_reg_lambda: float = 0.0,
+                 dist_lambda: bool = True,
+                 delay_type: str = "synaptic",
                  **genn_kwargs):
         supported_matrix_types = [SynapseMatrixType.TOEPLITZ,
                                   SynapseMatrixType.PROCEDURAL_KERNELG,
@@ -577,6 +582,10 @@ class EventPropCompiler(Compiler):
                                     ([get_underlying_pop(p) for p in conns_and_pops[1]], [get_underlying_pop(p) for p in conns_and_pops[2]])) if conns_and_pops is not None else ([], ([], []))
         self.pos_init = pos_init if pos_init is not None else {}
         self.weight_fix_conns = set(get_underlying_conn(c) for c in weight_fix_conns)
+        self.reg_conns = set(get_underlying_conn(c) for c in reg_conns)
+        self.l1_reg_lambda = l1_reg_lambda
+        self.dist_lambda = dist_lambda
+        self.delay_type = delay_type
 
     def pre_compile(self, network: Network, 
                     genn_model, **kwargs) -> CompileState:
@@ -1461,13 +1470,19 @@ class EventPropCompiler(Compiler):
         base_train_callbacks = []
         base_validate_callbacks = []
         if len(weight_optimiser_cus) > 0 or len(delay_optimiser_cus) > 0 or len(position_optimiser_cus) > 0:
+            for conn in self.reg_conns:
+                base_train_callbacks.append(RegL1(conn, self.l1_reg_lambda, self.dist_lambda))
             for pop, pre_conns, post_conns in zip(self.pops_and_conns_and_pops[0], self.pops_and_conns_and_pops[1][0], self.pops_and_conns_and_pops[1][1]):
                 base_train_callbacks.append(LearnPosition(pop, pre_conns, post_conns, len(self.pos_init[pop])))
+            if self.delay_type == "axonal":
+                for conn, _, d in compile_state.optimiser_connections:
+                    if d:
+                        base_train_callbacks.append(AxonalDelay(conn))
+            for conn in self.weight_fix_conns:
+                base_train_callbacks.append(FixConnections(conn))
             if self.full_batch_size > 1:
                 base_train_callbacks.append(
                     CustomUpdateOnBatchEndNotFirst("GradientBatchReduce"))
-            for conn in self.weight_fix_conns:
-                base_train_callbacks.append(FixConnections(conn))
             base_train_callbacks.append(
                 CustomUpdateOnBatchEndNotFirst("GradientLearn"))
             base_train_callbacks.append(
