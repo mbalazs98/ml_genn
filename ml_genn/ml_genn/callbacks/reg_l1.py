@@ -20,18 +20,20 @@ class RegL1(Callback):
     Args:
         conn:               Synapse population to record from        
     """
-    def __init__(self, conn: Connection, l1_lambda: float = 1e-10, dist_lambda: bool = True):
+    def __init__(self, conn: Connection, l1_lambda: float = 1e-10, dist_lambda: bool = True, dynamic_dist: bool = True):
         # Get underlying connection
         self._conn = get_underlying_conn(conn)
         self.l1_lambda = l1_lambda
         self.dist_lambda = dist_lambda
-
+        self.dynamic_dist = dynamic_dist
 
     def set_params(self, data, compiled_network, **kwargs):
         self._compiled_network = compiled_network
 
     def reg(self, x, distance_tensor):
         if self.dist_lambda:
+            if self.dynamic_dist:
+                distance_tensor = distance_tensor / np.mean(distance_tensor)
             return self.l1_lambda * distance_tensor * np.sign(x)
         else:
             return self.l1_lambda * np.sign(x)
