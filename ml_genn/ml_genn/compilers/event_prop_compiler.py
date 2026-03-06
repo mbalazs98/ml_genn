@@ -171,7 +171,7 @@ neuron_backward_pass = Template(
 # Template used to generate reset code for neurons
 neuron_reset = Template(
     """
-    if(RingWriteOffset != RingReadEndOffset) {
+    if(RingWriteOffset != RingReadEndOffset $spike_filter){
         // Write spike time and I-V to tape
         RingSpikeTime[ringOffset + RingWriteOffset] = t;
         $write
@@ -619,6 +619,7 @@ class EventPropCompiler(Compiler):
                  batch_size: int = 1, rng_seed: int = 0,
                  kernel_profiling: bool = False,
                  communicator: Communicator = None,
+                 backward_pass_end_time: int = None,
                  **genn_kwargs):
         supported_matrix_types = [SynapseMatrixType.TOEPLITZ,
                                   SynapseMatrixType.PROCEDURAL_KERNELG,
@@ -670,6 +671,7 @@ class EventPropCompiler(Compiler):
         self.per_timestep_loss = per_timestep_loss
         self.ttfs_alpha = ttfs_alpha
         self.softmax_temperature = softmax_temperature
+        self.backward_pass_end_time = backward_pass_end_time
         
 
     def pre_compile(self, network: Network, 
@@ -1772,7 +1774,10 @@ class EventPropCompiler(Compiler):
                 write=write_code,
                 strict_check=(neuron_reset_strict_check
                                 if self.strict_buffer_checking
-                                else "")))
+                                else ""),
+                 spike_filter=("" 
+                                if self.backward_pass_end_time is None
+                                else f"&& t > {self.backward_pass_end_time}")))
         return genn_model
         
     def _build_out_neuron_model(self, pop: Population, 
@@ -2193,9 +2198,12 @@ class EventPropCompiler(Compiler):
                 reset_code = neuron_reset.substitute(
                     max_spikes=self.max_spikes,
                     write=write_code,
-                    strict_check=(neuron_reset_strict_check 
-                                  if self.strict_buffer_checking
-                                  else ""))
+                    strict_check=(neuron_reset_strict_check
+                                    if self.strict_buffer_checking
+                                    else ""),
+                    spike_filter=("" 
+                                    if self.backward_pass_end_time is None
+                                    else f"&& t > {self.backward_pass_end_time}"))
                 genn_model.prepend_reset_code(reset_code)
 
                 # Generate 'phantom' spike times
