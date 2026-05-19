@@ -181,18 +181,20 @@ neuron_backward_pass = Template(
 # Template used to generate reset code for neurons
 neuron_reset = Template(
     """
-    if(RingWriteOffset != RingReadEndOffset) {
-        // Write spike time and I-V to tape
-        RingSpikeTime[ringOffset + RingWriteOffset] = t;
-        $write
-        RingWriteOffset++;
+    if($spike_filter){
+        if(RingWriteOffset != RingReadEndOffset){
+            // Write spike time and I-V to tape
+            RingSpikeTime[ringOffset + RingWriteOffset] = t;
+            $write
+            RingWriteOffset++;
 
-        // Loop around if we've reached end of circular buffer
-        if (RingWriteOffset >= $max_spikes) {
-            RingWriteOffset = 0;
+            // Loop around if we've reached end of circular buffer
+            if (RingWriteOffset >= $max_spikes) {
+                RingWriteOffset = 0;
+            }
         }
+        $strict_check
     }
-    $strict_check
     """)
 
 # Code used to add optional strict checking after neuron reset
@@ -622,6 +624,7 @@ class EventPropCompiler(Compiler):
         communicator:               Communicator used for inter-process
                                     communications when training across
                                     multiple GPUs.
+        backward_pass_end_time:     Cut off spikes before this time in backwar pass
         
     """
 
@@ -632,7 +635,7 @@ class EventPropCompiler(Compiler):
                  per_timestep_loss: bool = False, dt: float = 1.0,
                  ttfs_alpha: float = 0.01, softmax_temperature: float = 1.0,
                  batch_size: int = 1, rng_seed: int = 0, kernel_profiling: bool = False, 
-                 communicator: Communicator = None, **genn_kwargs):
+                 communicator: Communicator = None, backward_pass_end_time: float = None, **genn_kwargs):
         supported_matrix_types = [SynapseMatrixType.TOEPLITZ,
                                   SynapseMatrixType.PROCEDURAL_KERNELG,
                                   SynapseMatrixType.DENSE,
@@ -683,7 +686,7 @@ class EventPropCompiler(Compiler):
         self.per_timestep_loss = per_timestep_loss
         self.ttfs_alpha = ttfs_alpha
         self.softmax_temperature = softmax_temperature
-        
+        self.backward_pass_end_time = backward_pass_end_time
 
     def pre_compile(self, network: Network, 
                     genn_model, **kwargs) -> CompileState:
@@ -1840,7 +1843,10 @@ class EventPropCompiler(Compiler):
                 write=write_code,
                 strict_check=(neuron_reset_strict_check
                                 if self.strict_buffer_checking
-                                else "")))
+                                else ""),
+                 spike_filter=("" 
+                                if self.backward_pass_end_time is None
+                                else f"t > {self.backward_pass_end_time}")))
         return genn_model
         
     def _build_out_neuron_model(self, pop: Population, 
@@ -2361,9 +2367,12 @@ class EventPropCompiler(Compiler):
                 reset_code = neuron_reset.substitute(
                     max_spikes=self.max_spikes,
                     write=write_code,
-                    strict_check=(neuron_reset_strict_check 
-                                  if self.strict_buffer_checking
-                                  else ""))
+                    strict_check=(neuron_reset_strict_check
+                                if self.strict_buffer_checking
+                                else ""),
+                 spike_filter=("" 
+                                if self.backward_pass_end_time is None
+                                else f"t > {self.backward_pass_end_time}"))
                 genn_model.prepend_reset_code(reset_code)
 
                 # Generate 'phantom' spike times
